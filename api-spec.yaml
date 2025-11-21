@@ -1,0 +1,492 @@
+openapi: 3.0.0
+info:
+  version: 1.0.0
+  title: Pension Calculation Engine API
+  description: |
+    API for the Pension Calculation Engine - Visma Performance Hackathon.
+    This API processes calculation requests with ordered sequences of mutations.
+tags:
+  - name: calculation requests
+    description: Endpoints used to perform calculations in the calculation engine.
+paths:
+  /calculation-requests:
+    post:
+      tags:
+        - calculation requests
+      summary: Process a calculation request
+      description: |
+        Process a pension calculation request with ordered mutations.
+        Mutations are applied sequentially to calculate pension entitlements.
+      operationId: addCalculationRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalculationRequest'
+      responses:
+        '200':
+          description: Calculation request processed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculationResponse'
+        '400':
+          description: Bad request or validation errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    CalculationRequest:
+      description: A calculation request for the calculation engine.
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - calculation_instructions
+      properties:
+        tenant_id:
+          description: The Id of the tenant for which this calculation request is made.
+          type: string
+          maxLength: 25
+          pattern: "[a-z0-9]+(?:_[a-z0-9]+)*"
+          example: sample_tenant
+        correlation_id:
+          type: string
+          description: An optional UUID that contains a correlationId for request tracking.
+          format: uuid
+        calculation_instructions:
+          description: Instructions for how the calculation should be performed.
+          type: object
+          additionalProperties: false
+          required:
+            - mutations
+          properties:
+            mutations:
+              description: |
+                The list of mutations that should be processed in the calculation, provided in the order of execution.
+                Mutations must be sorted by actual_at date.
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/CalculationMutation'
+
+    CalculationResponse:
+      description: A calculation response from the calculation engine.
+      readOnly: true
+      type: object
+      required:
+        - calculation_metadata
+        - calculation_result
+      properties:
+        calculation_metadata:
+          description: Metadata about this calculation, including timing.
+          type: object
+          required:
+            - calculation_id
+            - tenant_id
+            - calculation_started_at
+            - calculation_completed_at
+            - calculation_duration_ms
+            - calculation_outcome
+          properties:
+            calculation_id:
+              description: The Id of the calculation that was performed.
+              type: string
+              format: uuid
+            tenant_id:
+              description: The Id of the tenant for which this calculation request was made.
+              type: string
+            dossier_id:
+              description: The Id of the Dossier that was calculated. Only present if there is an end situation with a dossier.
+              type: string
+            correlation_id:
+              type: string
+              description: The correlation_id from the request, if provided.
+              format: uuid
+            calculation_started_at:
+              description: The date and time when this calculation was started.
+              type: string
+              format: date-time
+            calculation_completed_at:
+              description: The date and time when this calculation was completed.
+              type: string
+              format: date-time
+            calculation_duration_ms:
+              description: The number of milliseconds the calculation took.
+              type: integer
+              format: int64
+            calculation_outcome:
+              description: |
+                The outcome of the calculation.
+                SUCCESS if the calculation was finished without CRITICAL messages.
+                FAILURE if there is at least one CRITICAL message.
+              type: string
+              enum: [SUCCESS, FAILURE]
+
+        calculation_result:
+          type: object
+          description: |
+            The result of the calculation, which contains:
+            - A list of messages that were generated during the calculation.
+            - A list of mutations that were processed in the calculation, in order of execution.
+            - The end situation of the calculation.
+            - The initial situation at the start of the calculation.
+          required:
+            - messages
+            - mutations
+            - end_situation
+          properties:
+            messages:
+              description: |
+                A list of messages that were generated during the calculation.
+                These are (critical) errors, warnings or information messages.
+              type: array
+              minItems: 0
+              items:
+                $ref: '#/components/schemas/CalculationMessage'
+            end_situation:
+              description: The situation at the very end of the calculation after applying all mutations.
+              type: object
+              required:
+                - mutation_id
+                - mutation_index
+                - actual_at
+                - situation
+              properties:
+                mutation_id:
+                  description: The ID of the last mutation that was applied.
+                  type: string
+                  format: uuid
+                mutation_index:
+                  description: The index of the last mutation in the mutations array.
+                  type: integer
+                actual_at:
+                  description: The date at which this end situation was created.
+                  type: string
+                  format: date
+                situation:
+                  $ref: '#/components/schemas/SimplifiedSituation'
+            initial_situation:
+              description: |
+                The initial situation at the start of the calculation, before any mutations were applied.
+                This will always be an empty situation (dossier: null).
+              type: object
+              required:
+                - actual_at
+                - situation
+              properties:
+                actual_at:
+                  description: The date at which this initial situation was created.
+                  type: string
+                  format: date
+                situation:
+                  $ref: '#/components/schemas/SimplifiedSituation'
+            mutations:
+              description: |
+                The list of mutations processed in the calculation, in order of execution.
+                Each mutation includes the original mutation object and JSON Patch documents.
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required:
+                  - mutation
+                  - forward_patch_to_situation_after_this_mutation
+                  - backward_patch_to_previous_situation
+                properties:
+                  mutation:
+                    $ref: '#/components/schemas/CalculationMutation'
+                  forward_patch_to_situation_after_this_mutation:
+                    description: JSON Patch document to get from previous situation to situation after this mutation.
+                    $ref: '#/components/schemas/JsonPatchDocument'
+                  backward_patch_to_previous_situation:
+                    description: JSON Patch document to get from situation after this mutation to previous situation.
+                    $ref: '#/components/schemas/JsonPatchDocument'
+                  calculation_message_indexes:
+                    description: The indexes of messages (from the top-level messages array) generated by this mutation.
+                    type: array
+                    items:
+                      type: integer
+
+    BaseCalculationMutation:
+      type: object
+      description: Common properties for a Mutation that should be processed in the calculation.
+      additionalProperties: false
+      required:
+        - mutation_id
+        - mutation_definition_name
+        - mutation_type
+        - actual_at
+        - mutation_properties
+      properties:
+        mutation_id:
+          description: The id of the mutation within the Dossier. This ID should be unique within the calculation.
+          type: string
+          format: uuid
+        mutation_definition_name:
+          type: string
+          description: The name of the MutationDefinition that defines the properties of this Mutation.
+          enum: [create_dossier, add_policy, change_salary, calculate_retirement_benefit]
+        mutation_type:
+          type: string
+          description: The type of the mutation.
+          enum: [DOSSIER_CREATION, DOSSIER, POLICY]
+        actual_at:
+          description: |
+            The date at which this mutation should be processed in the calculation.
+            This date is used to determine the order of execution of the mutations.
+          type: string
+          format: date
+          example: "2020-01-01"
+        mutation_properties:
+          type: object
+          additionalProperties: true
+          description: "The values of the Mutation properties, as defined by the mutation definition."
+
+    DossierCreationCalculationMutation:
+      description: A mutation for creating a new dossier.
+      allOf:
+        - $ref: '#/components/schemas/BaseCalculationMutation'
+        - type: object
+          properties:
+            mutation_type:
+              type: string
+              enum: [DOSSIER_CREATION]
+            mutation_definition_name:
+              type: string
+              enum: [create_dossier]
+
+    DossierCalculationMutation:
+      description: A mutation that applies to an existing dossier.
+      allOf:
+        - $ref: '#/components/schemas/BaseCalculationMutation'
+        - type: object
+          required:
+            - dossier_id
+          properties:
+            mutation_type:
+              type: string
+              enum: [DOSSIER]
+            mutation_definition_name:
+              type: string
+              enum: [add_policy, calculate_retirement_benefit]
+            dossier_id:
+              type: string
+              description: The ID of the dossier this mutation applies to.
+
+    PolicyCalculationMutation:
+      description: A mutation that applies to an existing policy.
+      allOf:
+        - $ref: '#/components/schemas/BaseCalculationMutation'
+        - type: object
+          required:
+            - dossier_id
+            - policy_id
+          properties:
+            mutation_type:
+              type: string
+              enum: [POLICY]
+            mutation_definition_name:
+              type: string
+              enum: [change_salary]
+            dossier_id:
+              type: string
+              description: The ID of the dossier this mutation applies to.
+            policy_id:
+              type: string
+              description: The ID of the policy this mutation applies to.
+
+    CalculationMutation:
+      description: A mutation that can be applied in a calculation.
+      oneOf:
+        - $ref: '#/components/schemas/DossierCreationCalculationMutation'
+        - $ref: '#/components/schemas/DossierCalculationMutation'
+        - $ref: '#/components/schemas/PolicyCalculationMutation'
+      discriminator:
+        propertyName: mutation_type
+        mapping:
+          DOSSIER_CREATION: '#/components/schemas/DossierCreationCalculationMutation'
+          DOSSIER: '#/components/schemas/DossierCalculationMutation'
+          POLICY: '#/components/schemas/PolicyCalculationMutation'
+
+    SimplifiedSituation:
+      description: The complete state of a dossier at a specific point in time.
+      type: object
+      properties:
+        dossier:
+          type: object
+          nullable: true
+          properties:
+            dossier_id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [ACTIVE, RETIRED]
+            retirement_date:
+              type: string
+              format: date
+              nullable: true
+            persons:
+              type: array
+              items:
+                type: object
+                properties:
+                  person_id:
+                    type: string
+                    format: uuid
+                  role:
+                    type: string
+                    enum: [PARTICIPANT, PARTNER]
+                  name:
+                    type: string
+                  birth_date:
+                    type: string
+                    format: date
+                  relationship_start_date:
+                    type: string
+                    format: date
+                    nullable: true
+                  relationship_end_date:
+                    type: string
+                    format: date
+                    nullable: true
+                required:
+                  - person_id
+                  - role
+                  - name
+                  - birth_date
+            policies:
+              type: array
+              items:
+                type: object
+                properties:
+                  policy_id:
+                    type: string
+                  scheme_id:
+                    type: string
+                  employment_start_date:
+                    type: string
+                    format: date
+                  salary:
+                    type: number
+                    nullable: true
+                  part_time_factor:
+                    type: number
+                    nullable: true
+                  attainable_pension:
+                    type: number
+                    nullable: true
+                required:
+                  - policy_id
+                  - scheme_id
+                  - employment_start_date
+          required:
+            - dossier_id
+            - status
+            - persons
+            - policies
+      required:
+        - dossier
+
+    JsonPatchDocument:
+      description: A JSON Patch document as defined by RFC 6902.
+      type: array
+      items:
+        type: object
+        required:
+          - op
+          - path
+        properties:
+          op:
+            type: string
+            enum: [add, remove, replace, move, copy, test]
+            description: The operation to be performed.
+          path:
+            type: string
+            description: A JSON-Pointer.
+          value:
+            description: The value to be used within the operations. Only required for add, replace, and test.
+          from:
+            type: string
+            description: A string containing a JSON Pointer value. Required for move and copy operations.
+
+    CalculationMessage:
+      description: A (critical) error, warning or information message generated during the calculation.
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - level
+        - code
+        - message
+      properties:
+        id:
+          type: integer
+          description: A unique identifier for this message, corresponding to its index in the messages array.
+        level:
+          type: string
+          enum: [CRITICAL, WARNING]
+          description: |
+            The severity level of the message.
+            CRITICAL: Fatal error that prevents the calculation from completing.
+            WARNING: Potential issue that does not prevent completion.
+        code:
+          type: string
+          description: A machine-readable code for the message.
+          example: "INVALID_RETIREMENT_AGE"
+        source_mutation_id:
+          type: string
+          format: uuid
+          description: The ID of the mutation that caused this message.
+        source_mutation_index:
+          type: integer
+          description: The index of the mutation that caused this message.
+        message:
+          description: The error or informational message (English only).
+          type: string
+
+    ErrorResponse:
+      description: Generic format for an error message
+      type: object
+      properties:
+        status:
+          description: The HTTP Status code that was sent with this error message
+          type: integer
+        error_code:
+          type: string
+          description: Internal error code
+        message:
+          type: string
+          description: Basic feedback message
+        developer_message:
+          type: string
+          description: More technical error message
+        validation_messages:
+          type: array
+          description: An optional list of validation messages
+          items:
+            type: object
+            properties:
+              error_code:
+                type: string
+              field:
+                type: string
+              message:
+                type: string
+        correlation_id:
+          type: string
+          format: uuid
+          description: A UUID that contains a correlationId for request tracking.
+      additionalProperties: false
+
