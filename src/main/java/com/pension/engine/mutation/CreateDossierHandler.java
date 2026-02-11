@@ -1,8 +1,9 @@
 package com.pension.engine.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pension.engine.model.request.Mutation;
 import com.pension.engine.model.response.CalculationMessage;
 import com.pension.engine.model.state.Dossier;
@@ -16,11 +17,8 @@ import java.time.format.DateTimeParseException;
 
 public class CreateDossierHandler implements MutationHandler {
 
-    private final ObjectMapper mapper;
-
-    public CreateDossierHandler(ObjectMapper mapper) {
-        this.mapper = mapper;
-    }
+    private static final JsonNodeFactory NF = JsonNodeFactory.instance;
+    private static final long TODAY_EPOCH_DAY = LocalDate.now().toEpochDay();
 
     @Override
     public MutationResult execute(Situation situation, Mutation mutation, SchemeRegistryClient schemeClient) {
@@ -41,7 +39,7 @@ public class CreateDossierHandler implements MutationHandler {
         String birthDateStr = props.path("birth_date").asText("");
         try {
             LocalDate birthDate = LocalDate.parse(birthDateStr);
-            if (birthDate.isAfter(LocalDate.now())) {
+            if (birthDate.toEpochDay() > TODAY_EPOCH_DAY) {
                 return MutationResult.critical(new CalculationMessage(
                         "CRITICAL", "INVALID_BIRTH_DATE", "Birth date is in the future"));
             }
@@ -64,8 +62,19 @@ public class CreateDossierHandler implements MutationHandler {
 
         situation.setDossier(dossier);
 
-        // Build patches: forward = add /dossier {serialized}, backward = remove /dossier
-        JsonNode dossierNode = mapper.valueToTree(dossier);
+        // Build forward patch value manually (avoids mapper.valueToTree overhead)
+        ObjectNode dossierNode = NF.objectNode();
+        dossierNode.put("dossier_id", dossierId);
+        dossierNode.put("status", "ACTIVE");
+        dossierNode.putNull("retirement_date");
+        ObjectNode personNode = NF.objectNode();
+        personNode.put("person_id", personId);
+        personNode.put("role", "PARTICIPANT");
+        personNode.put("name", name);
+        personNode.put("birth_date", birthDateStr);
+        dossierNode.set("persons", NF.arrayNode(1).add(personNode));
+        dossierNode.set("policies", NF.arrayNode());
+
         ArrayNode fwd = new PatchBuilder(1).add("/dossier", dossierNode).build();
         ArrayNode bwd = new PatchBuilder(1).remove("/dossier").build();
 

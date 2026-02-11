@@ -66,7 +66,7 @@ public class CalculateRetirementBenefitHandler implements MutationHandler {
 
         // Eligibility check: age >= 65 OR total years >= 40
         Person participant = dossier.getPersons().get(0);
-        long birthEpochDay = LocalDate.parse(participant.getBirthDate()).toEpochDay();
+        long birthEpochDay = participant.getBirthDateEpochDay();
         long ageDays = retirementEpochDay - birthEpochDay;
         double age = ageDays / 365.25;
 

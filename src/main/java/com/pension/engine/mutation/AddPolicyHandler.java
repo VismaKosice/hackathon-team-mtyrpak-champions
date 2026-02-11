@@ -1,8 +1,9 @@
 package com.pension.engine.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pension.engine.model.request.Mutation;
 import com.pension.engine.model.response.CalculationMessage;
 import com.pension.engine.model.state.Dossier;
@@ -16,11 +17,7 @@ import java.util.List;
 
 public class AddPolicyHandler implements MutationHandler {
 
-    private final ObjectMapper mapper;
-
-    public AddPolicyHandler(ObjectMapper mapper) {
-        this.mapper = mapper;
-    }
+    private static final JsonNodeFactory NF = JsonNodeFactory.instance;
 
     @Override
     public MutationResult execute(Situation situation, Mutation mutation, SchemeRegistryClient schemeClient) {
@@ -66,7 +63,8 @@ public class AddPolicyHandler implements MutationHandler {
 
         // Application
         Policy policy = new Policy();
-        policy.setPolicyId(dossier.getDossierId() + "-" + dossier.nextPolicySequence());
+        String policyId = dossier.getDossierId() + "-" + dossier.nextPolicySequence();
+        policy.setPolicyId(policyId);
         policy.setSchemeId(schemeId);
         policy.setEmploymentStartDate(employmentStartDate);
         policy.setSalary(salary);
@@ -77,8 +75,16 @@ public class AddPolicyHandler implements MutationHandler {
         int newIndex = dossier.getPolicies().size(); // index before add
         dossier.getPolicies().add(policy);
 
-        // Build patches: forward = add /dossier/policies/- {serialized}, backward = remove /dossier/policies/{idx}
-        JsonNode policyNode = mapper.valueToTree(policy);
+        // Build forward patch value manually (avoids mapper.valueToTree overhead)
+        ObjectNode policyNode = NF.objectNode();
+        policyNode.put("policy_id", policyId);
+        policyNode.put("scheme_id", schemeId);
+        policyNode.put("employment_start_date", employmentStartDate);
+        policyNode.put("salary", salary);
+        policyNode.put("part_time_factor", partTimeFactor);
+        policyNode.putNull("attainable_pension");
+        policyNode.putNull("projections");
+
         ArrayNode fwd = new PatchBuilder(1).add("/dossier/policies/-", policyNode).build();
         ArrayNode bwd = new PatchBuilder(1).remove("/dossier/policies/" + newIndex).build();
 

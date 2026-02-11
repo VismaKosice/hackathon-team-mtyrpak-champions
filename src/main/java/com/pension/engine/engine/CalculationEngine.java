@@ -1,6 +1,5 @@
 package com.pension.engine.engine;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.pension.engine.model.request.CalculationRequest;
 import com.pension.engine.model.request.Mutation;
@@ -12,16 +11,12 @@ import com.pension.engine.mutation.MutationResult;
 import com.pension.engine.patch.PatchBuilder;
 import com.pension.engine.scheme.SchemeRegistryClient;
 import org.springframework.stereotype.Component;
-import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Scheduler;
-import reactor.core.scheduler.Schedulers;
 
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Component
@@ -30,24 +25,14 @@ public class CalculationEngine {
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
             .withZone(ZoneOffset.UTC);
 
-    private static final Scheduler CALC_SCHEDULER =
-            Schedulers.fromExecutor(Executors.newVirtualThreadPerTaskExecutor());
-
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     private final MutationRegistry registry;
-    private final ObjectMapper mapper;
     private final SchemeRegistryClient schemeClient;
 
-    public CalculationEngine(ObjectMapper mapper, SchemeRegistryClient schemeClient) {
-        this.registry = new MutationRegistry(mapper);
-        this.mapper = mapper;
+    public CalculationEngine(SchemeRegistryClient schemeClient) {
+        this.registry = new MutationRegistry();
         this.schemeClient = schemeClient;
-    }
-
-    public Mono<CalculationResponse> process(CalculationRequest request) {
-        return Mono.fromCallable(() -> processSync(request))
-                .subscribeOn(CALC_SCHEDULER);
     }
 
     public CalculationResponse processSync(CalculationRequest request) {

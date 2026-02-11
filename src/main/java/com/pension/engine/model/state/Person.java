@@ -1,6 +1,9 @@
 package com.pension.engine.model.state;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
+import java.time.LocalDate;
 
 public class Person {
 
@@ -15,6 +18,9 @@ public class Person {
 
     @JsonProperty("birth_date")
     private String birthDate;
+
+    @JsonIgnore
+    private transient long birthDateEpochDay = Long.MIN_VALUE;
 
     public Person() {}
 
@@ -35,5 +41,17 @@ public class Person {
     public void setName(String name) { this.name = name; }
 
     public String getBirthDate() { return birthDate; }
-    public void setBirthDate(String birthDate) { this.birthDate = birthDate; }
+    public void setBirthDate(String birthDate) {
+        this.birthDate = birthDate;
+        this.birthDateEpochDay = Long.MIN_VALUE;
+    }
+
+    public long getBirthDateEpochDay() {
+        long d = birthDateEpochDay;
+        if (d == Long.MIN_VALUE) {
+            d = LocalDate.parse(birthDate).toEpochDay();
+            birthDateEpochDay = d;
+        }
+        return d;
+    }
 }
