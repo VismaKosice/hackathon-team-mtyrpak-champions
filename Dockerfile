@@ -1,4 +1,4 @@
-FROM eclipse-temurin:21-jdk-alpine AS build
+FROM eclipse-temurin:21-jdk AS build
 WORKDIR /app
 COPY gradle/ gradle/
 COPY gradlew build.gradle.kts settings.gradle.kts ./
@@ -12,7 +12,7 @@ COPY --from=build /app/build/libs/*.jar /app/app.jar
 EXPOSE 8080 9090
 CMD ["java", \
      "-XX:+UseParallelGC", \
-     "-Xms4g", "-Xmx4g", \
+     "-Xms2g", "-Xmx2g", \
      "-XX:NewRatio=1", \
      "-XX:+AlwaysPreTouch", \
      "-XX:+TieredCompilation", \
