@@ -1,19 +1,26 @@
 package com.pension.engine.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.pension.engine.model.request.Mutation;
 import com.pension.engine.model.response.CalculationMessage;
 import com.pension.engine.model.state.Dossier;
 import com.pension.engine.model.state.Person;
 import com.pension.engine.model.state.Situation;
+import com.pension.engine.patch.PatchBuilder;
 import com.pension.engine.scheme.SchemeRegistryClient;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
-import java.util.List;
 
 public class CreateDossierHandler implements MutationHandler {
+
+    private final ObjectMapper mapper;
+
+    public CreateDossierHandler(ObjectMapper mapper) {
+        this.mapper = mapper;
+    }
 
     @Override
     public MutationResult execute(Situation situation, Mutation mutation, SchemeRegistryClient schemeClient) {
@@ -57,6 +64,11 @@ public class CreateDossierHandler implements MutationHandler {
 
         situation.setDossier(dossier);
 
-        return MutationResult.success();
+        // Build patches: forward = add /dossier {serialized}, backward = remove /dossier
+        JsonNode dossierNode = mapper.valueToTree(dossier);
+        ArrayNode fwd = new PatchBuilder(1).add("/dossier", dossierNode).build();
+        ArrayNode bwd = new PatchBuilder(1).remove("/dossier").build();
+
+        return MutationResult.successWithPatches(fwd, bwd);
     }
 }

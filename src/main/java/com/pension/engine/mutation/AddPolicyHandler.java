@@ -1,17 +1,26 @@
 package com.pension.engine.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.pension.engine.model.request.Mutation;
 import com.pension.engine.model.response.CalculationMessage;
 import com.pension.engine.model.state.Dossier;
 import com.pension.engine.model.state.Policy;
 import com.pension.engine.model.state.Situation;
+import com.pension.engine.patch.PatchBuilder;
 import com.pension.engine.scheme.SchemeRegistryClient;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public class AddPolicyHandler implements MutationHandler {
+
+    private final ObjectMapper mapper;
+
+    public AddPolicyHandler(ObjectMapper mapper) {
+        this.mapper = mapper;
+    }
 
     @Override
     public MutationResult execute(Situation situation, Mutation mutation, SchemeRegistryClient schemeClient) {
@@ -65,11 +74,17 @@ public class AddPolicyHandler implements MutationHandler {
         policy.setAttainablePension(null);
         policy.setProjections(null);
 
+        int newIndex = dossier.getPolicies().size(); // index before add
         dossier.getPolicies().add(policy);
 
+        // Build patches: forward = add /dossier/policies/- {serialized}, backward = remove /dossier/policies/{idx}
+        JsonNode policyNode = mapper.valueToTree(policy);
+        ArrayNode fwd = new PatchBuilder(1).add("/dossier/policies/-", policyNode).build();
+        ArrayNode bwd = new PatchBuilder(1).remove("/dossier/policies/" + newIndex).build();
+
         if (warnings != null) {
-            return MutationResult.warnings(warnings);
+            return MutationResult.warningsWithPatches(warnings, fwd, bwd);
         }
-        return MutationResult.success();
+        return MutationResult.successWithPatches(fwd, bwd);
     }
 }

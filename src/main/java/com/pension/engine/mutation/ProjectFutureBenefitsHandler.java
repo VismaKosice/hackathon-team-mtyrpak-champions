@@ -1,12 +1,16 @@
 package com.pension.engine.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pension.engine.model.request.Mutation;
 import com.pension.engine.model.response.CalculationMessage;
 import com.pension.engine.model.state.Dossier;
 import com.pension.engine.model.state.Policy;
 import com.pension.engine.model.state.Projection;
 import com.pension.engine.model.state.Situation;
+import com.pension.engine.patch.PatchBuilder;
 import com.pension.engine.scheme.SchemeRegistryClient;
 
 import java.time.LocalDate;
@@ -15,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 
 public class ProjectFutureBenefitsHandler implements MutationHandler {
+
+    private static final JsonNodeFactory NF = JsonNodeFactory.instance;
 
     @Override
     public MutationResult execute(Situation situation, Mutation mutation, SchemeRegistryClient schemeClient) {
@@ -71,7 +77,7 @@ public class ProjectFutureBenefitsHandler implements MutationHandler {
         double[] accrualRateArr = new double[policyCount];
         for (int i = 0; i < policyCount; i++) {
             Policy policy = policies.get(i);
-            empStartDays[i] = LocalDate.parse(policy.getEmploymentStartDate()).toEpochDay();
+            empStartDays[i] = policy.getEmploymentStartEpochDay();
             effectiveSalaries[i] = policy.getSalary() * policy.getPartTimeFactor();
             if (accrualRates != null) {
                 accrualRateArr[i] = accrualRates.getOrDefault(policy.getSchemeId(), 0.02);
@@ -80,13 +86,24 @@ public class ProjectFutureBenefitsHandler implements MutationHandler {
             }
         }
 
-        // Count projection dates first to pre-allocate
+        // Pre-compute all projection dates: epoch days and date strings in a single pass
+        // Count dates first
         int dateCount = 0;
         for (LocalDate d = startDate; !d.isAfter(endDate); d = d.plusMonths(intervalMonths)) {
             dateCount++;
         }
+        long[] projEpochDays = new long[dateCount];
+        String[] projDateStrings = new String[dateCount];
+        {
+            int idx = 0;
+            for (LocalDate d = startDate; !d.isAfter(endDate); d = d.plusMonths(intervalMonths)) {
+                projEpochDays[idx] = d.toEpochDay();
+                projDateStrings[idx] = d.toString();
+                idx++;
+            }
+        }
 
-        // Initialize projections for each policy
+        // Initialize projections for each policy and compute in single pass
         List<List<Projection>> allProjections = new ArrayList<>(policyCount);
         for (int i = 0; i < policyCount; i++) {
             allProjections.add(new ArrayList<>(dateCount));
@@ -95,9 +112,8 @@ public class ProjectFutureBenefitsHandler implements MutationHandler {
         // Reuse arrays across projection dates
         double[] years = new double[policyCount];
 
-        // For each projection date, calculate pension using the same formula as retirement
-        for (LocalDate projDate = startDate; !projDate.isAfter(endDate); projDate = projDate.plusMonths(intervalMonths)) {
-            long projDayEpoch = projDate.toEpochDay();
+        for (int d = 0; d < dateCount; d++) {
+            long projDayEpoch = projEpochDays[d];
             double totalYears = 0;
             double weightedSum = 0;
 
@@ -113,7 +129,6 @@ public class ProjectFutureBenefitsHandler implements MutationHandler {
             }
 
             double weightedAvg = totalYears > 0 ? weightedSum / totalYears : 0;
-            String dateStr = projDate.toString();
 
             for (int i = 0; i < policyCount; i++) {
                 double policyPension;
@@ -122,18 +137,54 @@ public class ProjectFutureBenefitsHandler implements MutationHandler {
                 } else {
                     policyPension = 0;
                 }
-                allProjections.get(i).add(new Projection(dateStr, policyPension));
+                allProjections.get(i).add(new Projection(projDateStrings[d], policyPension));
             }
         }
 
-        // Set projections on policies
+        // Capture old projections for backward patch and build forward patch
+        PatchBuilder fwd = new PatchBuilder(policyCount);
+        PatchBuilder bwd = new PatchBuilder(policyCount);
+
         for (int i = 0; i < policyCount; i++) {
-            policies.get(i).setProjections(allProjections.get(i));
+            List<Projection> oldProjections = policies.get(i).getProjections();
+            List<Projection> newProjections = allProjections.get(i);
+
+            policies.get(i).setProjections(newProjections);
+
+            String path = "/dossier/policies/" + i + "/projections";
+
+            // Build forward patch value as ArrayNode manually
+            ArrayNode projArrayNode = NF.arrayNode(dateCount);
+            for (int d = 0; d < dateCount; d++) {
+                Projection p = newProjections.get(d);
+                ObjectNode pNode = NF.objectNode();
+                pNode.put("date", p.getDate());
+                pNode.put("projected_pension", p.getProjectedPension());
+                projArrayNode.add(pNode);
+            }
+            fwd.replace(path, projArrayNode);
+
+            // Backward: restore old value (null or previous projections)
+            if (oldProjections == null) {
+                bwd.replace(path, NF.nullNode());
+            } else {
+                ArrayNode oldArrayNode = NF.arrayNode(oldProjections.size());
+                for (Projection p : oldProjections) {
+                    ObjectNode pNode = NF.objectNode();
+                    pNode.put("date", p.getDate());
+                    pNode.put("projected_pension", p.getProjectedPension());
+                    oldArrayNode.add(pNode);
+                }
+                bwd.replace(path, oldArrayNode);
+            }
         }
 
+        ArrayNode fwdPatch = fwd.build();
+        ArrayNode bwdPatch = bwd.build();
+
         if (warnings != null && !warnings.isEmpty()) {
-            return MutationResult.warnings(warnings);
+            return MutationResult.warningsWithPatches(warnings, fwdPatch, bwdPatch);
         }
-        return MutationResult.success();
+        return MutationResult.successWithPatches(fwdPatch, bwdPatch);
     }
 }

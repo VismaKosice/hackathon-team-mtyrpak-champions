@@ -1,6 +1,5 @@
 package com.pension.engine.engine;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.pension.engine.model.request.CalculationRequest;
@@ -10,7 +9,7 @@ import com.pension.engine.model.state.Situation;
 import com.pension.engine.mutation.MutationHandler;
 import com.pension.engine.mutation.MutationRegistry;
 import com.pension.engine.mutation.MutationResult;
-import com.pension.engine.patch.JsonPatchGenerator;
+import com.pension.engine.patch.PatchBuilder;
 import com.pension.engine.scheme.SchemeRegistryClient;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -22,6 +21,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Component
@@ -30,20 +30,19 @@ public class CalculationEngine {
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
             .withZone(ZoneOffset.UTC);
 
-    private static final Scheduler CALC_SCHEDULER = Schedulers.newParallel("calc", 4);
+    private static final Scheduler CALC_SCHEDULER =
+            Schedulers.fromExecutor(Executors.newVirtualThreadPerTaskExecutor());
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     private final MutationRegistry registry;
     private final ObjectMapper mapper;
     private final SchemeRegistryClient schemeClient;
-    private final boolean patchEnabled;
 
     public CalculationEngine(ObjectMapper mapper, SchemeRegistryClient schemeClient) {
-        this.registry = new MutationRegistry();
+        this.registry = new MutationRegistry(mapper);
         this.mapper = mapper;
         this.schemeClient = schemeClient;
-        this.patchEnabled = true;
     }
 
     public Mono<CalculationResponse> process(CalculationRequest request) {
@@ -69,9 +68,6 @@ public class CalculationEngine {
 
         boolean failed = false;
 
-        // Take initial snapshot for JSON Patch reuse optimization
-        JsonNode currentSnapshot = patchEnabled ? mapper.valueToTree(situation) : null;
-
         for (int i = 0; i < mutationCount; i++) {
             Mutation mutation = mutations.get(i);
             MutationHandler handler = registry.getHandler(mutation.getMutationDefinitionName());
@@ -91,9 +87,6 @@ public class CalculationEngine {
                 break;
             }
 
-            // Reuse previous after-snapshot as current before-snapshot
-            JsonNode beforeSnapshot = currentSnapshot;
-
             MutationResult result = handler.execute(situation, mutation, schemeClient);
 
             if (result.isCritical()) {
@@ -107,11 +100,9 @@ public class CalculationEngine {
                 }
                 processed.setCalculationMessageIndexes(messageIndexes);
 
-                if (patchEnabled) {
-                    ArrayNode emptyPatch = mapper.createArrayNode();
-                    processed.setForwardPatch(emptyPatch);
-                    processed.setBackwardPatch(emptyPatch);
-                }
+                ArrayNode emptyPatch = PatchBuilder.emptyPatch();
+                processed.setForwardPatch(emptyPatch);
+                processed.setBackwardPatch(emptyPatch);
 
                 processedMutations.add(processed);
                 failed = true;
@@ -132,13 +123,10 @@ public class CalculationEngine {
                 processed.setCalculationMessageIndexes(List.of());
             }
 
-            // Generate JSON Patch with snapshot reuse
-            if (patchEnabled) {
-                JsonNode afterSnapshot = mapper.valueToTree(situation);
-                JsonNode[] patches = JsonPatchGenerator.generateBothPatches(beforeSnapshot, afterSnapshot);
-                processed.setForwardPatch(patches[0]);
-                processed.setBackwardPatch(patches[1]);
-                currentSnapshot = afterSnapshot; // carry forward for next iteration
+            // Use handler-generated patches directly
+            if (result.hasPatches()) {
+                processed.setForwardPatch(result.getForwardPatch());
+                processed.setBackwardPatch(result.getBackwardPatch());
             }
 
             processedMutations.add(processed);

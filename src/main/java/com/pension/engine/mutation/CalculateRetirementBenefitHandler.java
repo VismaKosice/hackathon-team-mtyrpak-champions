@@ -1,12 +1,14 @@
 package com.pension.engine.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.pension.engine.model.request.Mutation;
 import com.pension.engine.model.response.CalculationMessage;
 import com.pension.engine.model.state.Dossier;
 import com.pension.engine.model.state.Person;
 import com.pension.engine.model.state.Policy;
 import com.pension.engine.model.state.Situation;
+import com.pension.engine.patch.PatchBuilder;
 import com.pension.engine.scheme.SchemeRegistryClient;
 
 import java.time.LocalDate;
@@ -45,7 +47,7 @@ public class CalculateRetirementBenefitHandler implements MutationHandler {
         // Single pass: calculate years of service, effective salaries, and warnings
         for (int i = 0; i < policyCount; i++) {
             Policy policy = policies.get(i);
-            long empStartDay = LocalDate.parse(policy.getEmploymentStartDate()).toEpochDay();
+            long empStartDay = policy.getEmploymentStartEpochDay();
             long daysDiff = retirementEpochDay - empStartDay;
 
             if (daysDiff < 0) {
@@ -91,15 +93,16 @@ public class CalculateRetirementBenefitHandler implements MutationHandler {
         }
         double weightedAvg = totalYears > 0 ? weightedSum / totalYears : 0;
 
-        // Calculate annual pension using accrual rate (per-scheme if available, else default 0.02)
-        double annualPension;
-        if (accrualRates != null) {
-            annualPension = 0;
-            for (int i = 0; i < policyCount; i++) {
-                double accrualRate = accrualRates.getOrDefault(policies.get(i).getSchemeId(), 0.02);
-                annualPension += weightedAvg * years[i] * accrualRate;
-            }
+        // Capture old values for backward patch
+        String oldStatus = dossier.getStatus();
+        String oldRetirementDate = dossier.getRetirementDate();
+        Double[] oldAttainablePensions = new Double[policyCount];
+        for (int i = 0; i < policyCount; i++) {
+            oldAttainablePensions[i] = policies.get(i).getAttainablePension();
+        }
 
+        // Calculate annual pension using accrual rate (per-scheme if available, else default 0.02)
+        if (accrualRates != null) {
             for (int i = 0; i < policyCount; i++) {
                 if (totalYears > 0) {
                     double accrualRate = accrualRates.getOrDefault(policies.get(i).getSchemeId(), 0.02);
@@ -110,8 +113,7 @@ public class CalculateRetirementBenefitHandler implements MutationHandler {
                 }
             }
         } else {
-            annualPension = weightedAvg * totalYears * 0.02;
-
+            double annualPension = weightedAvg * totalYears * 0.02;
             for (int i = 0; i < policyCount; i++) {
                 if (totalYears > 0) {
                     double policyPension = annualPension * (years[i] / totalYears);
@@ -126,9 +128,28 @@ public class CalculateRetirementBenefitHandler implements MutationHandler {
         dossier.setStatus("RETIRED");
         dossier.setRetirementDate(retirementDateStr);
 
-        if (warnings != null && !warnings.isEmpty()) {
-            return MutationResult.warnings(warnings);
+        // Build patches
+        PatchBuilder fwd = new PatchBuilder(2 + policyCount);
+        PatchBuilder bwd = new PatchBuilder(2 + policyCount);
+
+        fwd.replace("/dossier/status", "RETIRED");
+        bwd.replace("/dossier/status", oldStatus);
+
+        fwd.replace("/dossier/retirement_date", retirementDateStr);
+        bwd.replace("/dossier/retirement_date", oldRetirementDate);
+
+        for (int i = 0; i < policyCount; i++) {
+            String path = "/dossier/policies/" + i + "/attainable_pension";
+            fwd.replace(path, policies.get(i).getAttainablePension());
+            bwd.replace(path, oldAttainablePensions[i]);
         }
-        return MutationResult.success();
+
+        ArrayNode fwdPatch = fwd.build();
+        ArrayNode bwdPatch = bwd.build();
+
+        if (warnings != null && !warnings.isEmpty()) {
+            return MutationResult.warningsWithPatches(warnings, fwdPatch, bwdPatch);
+        }
+        return MutationResult.successWithPatches(fwdPatch, bwdPatch);
     }
 }

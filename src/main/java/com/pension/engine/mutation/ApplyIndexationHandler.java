@@ -1,11 +1,13 @@
 package com.pension.engine.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.pension.engine.model.request.Mutation;
 import com.pension.engine.model.response.CalculationMessage;
 import com.pension.engine.model.state.Dossier;
 import com.pension.engine.model.state.Policy;
 import com.pension.engine.model.state.Situation;
+import com.pension.engine.patch.PatchBuilder;
 import com.pension.engine.scheme.SchemeRegistryClient;
 
 import java.util.ArrayList;
@@ -41,6 +43,9 @@ public class ApplyIndexationHandler implements MutationHandler {
         List<CalculationMessage> warnings = null;
         int matchCount = 0;
 
+        PatchBuilder fwd = new PatchBuilder();
+        PatchBuilder bwd = new PatchBuilder();
+
         for (int i = 0; i < policies.size(); i++) {
             Policy policy = policies.get(i);
 
@@ -53,7 +58,8 @@ public class ApplyIndexationHandler implements MutationHandler {
             }
 
             matchCount++;
-            double newSalary = policy.getSalary() * factor;
+            double oldSalary = policy.getSalary();
+            double newSalary = oldSalary * factor;
 
             if (newSalary < 0) {
                 newSalary = 0;
@@ -64,6 +70,10 @@ public class ApplyIndexationHandler implements MutationHandler {
             }
 
             policy.setSalary(newSalary);
+
+            String path = "/dossier/policies/" + i + "/salary";
+            fwd.replace(path, newSalary);
+            bwd.replace(path, oldSalary);
         }
 
         if (hasFilters && matchCount == 0) {
@@ -73,9 +83,12 @@ public class ApplyIndexationHandler implements MutationHandler {
                     "No policies match the specified filter criteria"));
         }
 
+        ArrayNode fwdPatch = fwd.build();
+        ArrayNode bwdPatch = bwd.build();
+
         if (warnings != null) {
-            return MutationResult.warnings(warnings);
+            return MutationResult.warningsWithPatches(warnings, fwdPatch, bwdPatch);
         }
-        return MutationResult.success();
+        return MutationResult.successWithPatches(fwdPatch, bwdPatch);
     }
 }

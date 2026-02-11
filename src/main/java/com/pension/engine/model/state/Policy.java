@@ -1,8 +1,10 @@
 package com.pension.engine.model.state;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @JsonInclude(JsonInclude.Include.ALWAYS)
@@ -29,6 +31,9 @@ public class Policy {
     @JsonProperty("projections")
     private List<Projection> projections;
 
+    @JsonIgnore
+    private transient long employmentStartEpochDay = Long.MIN_VALUE;
+
     public Policy() {}
 
     public String getPolicyId() { return policyId; }
@@ -38,7 +43,10 @@ public class Policy {
     public void setSchemeId(String schemeId) { this.schemeId = schemeId; }
 
     public String getEmploymentStartDate() { return employmentStartDate; }
-    public void setEmploymentStartDate(String employmentStartDate) { this.employmentStartDate = employmentStartDate; }
+    public void setEmploymentStartDate(String employmentStartDate) {
+        this.employmentStartDate = employmentStartDate;
+        this.employmentStartEpochDay = Long.MIN_VALUE; // invalidate cache
+    }
 
     public double getSalary() { return salary; }
     public void setSalary(double salary) { this.salary = salary; }
@@ -51,4 +59,13 @@ public class Policy {
 
     public List<Projection> getProjections() { return projections; }
     public void setProjections(List<Projection> projections) { this.projections = projections; }
+
+    public long getEmploymentStartEpochDay() {
+        long d = employmentStartEpochDay;
+        if (d == Long.MIN_VALUE) {
+            d = LocalDate.parse(employmentStartDate).toEpochDay();
+            employmentStartEpochDay = d;
+        }
+        return d;
+    }
 }

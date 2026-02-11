@@ -18,23 +18,25 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class SchemeRegistryClient {
 
+    private record SchemeResponse(double accrual_rate) {}
+
     private final WebClient webClient;
-    private final String baseUrl;
+    private final boolean enabled;
     private final ConcurrentHashMap<String, Double> cache = new ConcurrentHashMap<>();
 
     public SchemeRegistryClient(
             WebClient schemeRegistryWebClient,
             @Value("${scheme.registry.url:}") String baseUrl) {
         this.webClient = schemeRegistryWebClient;
-        this.baseUrl = baseUrl;
+        this.enabled = baseUrl != null && !baseUrl.isEmpty();
     }
 
     public boolean isEnabled() {
-        return baseUrl != null && !baseUrl.isEmpty();
+        return enabled;
     }
 
     public Map<String, Double> getAccrualRates(List<Policy> policies) {
-        if (!isEnabled()) {
+        if (!enabled) {
             return null;
         }
 
@@ -61,7 +63,7 @@ public class SchemeRegistryClient {
         }
 
         // Fetch missing in parallel using reactive WebClient
-        // .block() is safe here because we run on CALC_SCHEDULER / gRPC thread pool, never event loop
+        // .block() is safe here because we run on virtual threads, never event loop
         Map<String, Double> fetched = Flux.fromIterable(toFetch)
                 .flatMap(schemeId -> fetchAccrualRate(schemeId)
                         .map(rate -> Map.entry(schemeId, rate)))
@@ -82,15 +84,9 @@ public class SchemeRegistryClient {
         return webClient.get()
                 .uri("/schemes/" + schemeId)
                 .retrieve()
-                .bodyToMono(Map.class)
+                .bodyToMono(SchemeResponse.class)
                 .timeout(Duration.ofSeconds(2))
-                .map(body -> {
-                    Object accrualRate = body.get("accrual_rate");
-                    if (accrualRate instanceof Number) {
-                        return ((Number) accrualRate).doubleValue();
-                    }
-                    return 0.02;
-                })
+                .map(r -> r.accrual_rate())
                 .onErrorReturn(0.02);
     }
 }

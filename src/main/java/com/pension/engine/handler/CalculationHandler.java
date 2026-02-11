@@ -1,7 +1,10 @@
 package com.pension.engine.handler;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
 import com.pension.engine.engine.CalculationEngine;
 import com.pension.engine.model.request.CalculationRequest;
+import com.pension.engine.model.response.CalculationResponse;
 import com.pension.engine.model.response.ErrorResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.server.ServerRequest;
@@ -12,9 +15,11 @@ import reactor.core.publisher.Mono;
 public class CalculationHandler {
 
     private final CalculationEngine engine;
+    private final ObjectWriter responseWriter;
 
-    public CalculationHandler(CalculationEngine engine) {
+    public CalculationHandler(CalculationEngine engine, ObjectMapper mapper) {
         this.engine = engine;
+        this.responseWriter = mapper.writerFor(CalculationResponse.class);
     }
 
     public Mono<ServerResponse> handleCalculation(ServerRequest request) {
@@ -33,7 +38,17 @@ public class CalculationHandler {
                     }
 
                     return engine.process(calcRequest)
-                            .flatMap(response -> ServerResponse.ok().bodyValue(response));
+                            .flatMap(response -> {
+                                try {
+                                    byte[] bytes = responseWriter.writeValueAsBytes(response);
+                                    return ServerResponse.ok()
+                                            .header("Content-Type", "application/json")
+                                            .bodyValue(bytes);
+                                } catch (Exception e) {
+                                    return ServerResponse.status(500)
+                                            .bodyValue(new ErrorResponse(500, e.getMessage()));
+                                }
+                            });
                 })
                 .onErrorResume(e -> ServerResponse.status(500)
                         .bodyValue(new ErrorResponse(500, "Internal server error: " + e.getMessage())));
