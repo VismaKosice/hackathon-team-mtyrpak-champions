@@ -75,8 +75,8 @@ public class CreateDossierHandler implements MutationHandler {
         dossierNode.set("persons", NF.arrayNode(1).add(personNode));
         dossierNode.set("policies", NF.arrayNode());
 
-        ArrayNode fwd = new PatchBuilder(1).add("/dossier", dossierNode).build();
-        ArrayNode bwd = new PatchBuilder(1).remove("/dossier").build();
+        ArrayNode fwd = new PatchBuilder(1).replace("/dossier", dossierNode).build();
+        ArrayNode bwd = new PatchBuilder(1).replace("/dossier", NF.nullNode()).build();
 
         return MutationResult.successWithPatches(fwd, bwd);
     }
